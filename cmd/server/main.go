@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -25,51 +26,86 @@ import (
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
+// Init function untuk setup awal
+func init() {
+	// Check dan set umask
+	syscall.Umask(0)
+
+	// Check running user
+	if os.Getuid() == 0 {
+		log.Println("⚠️  WARNING: Running as root is not recommended")
+	}
+
+	// Check SHELL environment
+	if os.Getenv("SHELL") == "" {
+		os.Setenv("SHELL", "/bin/bash")
+	}
+
+	log.Printf("Running as user: %s (UID: %d)", os.Getenv("USER"), os.Getuid())
+
+	// Setup logging
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	// Diagnostic info
+	log.Printf("=== Moccha Starting ===")
+	log.Printf("OS: %s", runtime.GOOS)
+	log.Printf("Arch: %s", runtime.GOARCH)
+	log.Printf("Go Version: %s", runtime.Version())
+	log.Printf("User: %s (UID: %d)", os.Getenv("USER"), os.Getuid())
+	log.Printf("Home: %s", os.Getenv("HOME"))
+	log.Printf("PWD: %s", os.Getenv("PWD"))
+	log.Printf("SHELL: %s", os.Getenv("SHELL"))
+
+	// Check PTY availability
+	if _, err := os.Stat("/dev/ptmx"); err != nil {
+		log.Printf("⚠️  /dev/ptmx not accessible: %v", err)
+	} else {
+		log.Printf("✅ /dev/ptmx accessible")
+	}
+}
+
 //go:embed web/dist
 var webFiles embed.FS
 
-//go:embed cloudflared/*
-var cloudflaredBinary embed.FS
+//go:embed ngrok/darwin-arm64
+var ngrokDarwin embed.FS
+
+//go:embed ngrok/linux-amd64
+var ngrokLinux embed.FS
 
 type Config struct {
-	Port             string
-	AuthToken        string
-	RateLimit        int
-	ReadTimeout      time.Duration
-	WriteTimeout     time.Duration
-	IdleTimeout      time.Duration
-	EnableNgrok      bool
-	NgrokToken       string
-	EnableCloudflare bool
-	CloudflareToken  string
-	DebugMode        bool
-	AnonMode         bool
+	Port         string
+	AuthToken    string
+	RateLimit    int
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+	EnableNgrok  bool
+	NgrokToken   string
+	DebugMode    bool
+	AnonMode     bool
 }
 
-var cloudflaredProcess *exec.Cmd
+var ngrokProcess *exec.Cmd
 
 func main() {
 	cfg := &Config{
-		Port:             getEnv("PORT", "3000"),
-		AuthToken:        getEnv("AUTH_TOKEN", "moccha-secret-token"),
-		RateLimit:        100,
-		ReadTimeout:      30 * time.Second,
-		WriteTimeout:     30 * time.Second,
-		IdleTimeout:      120 * time.Second,
-		EnableNgrok:      true, // Default to using ngrok
-		NgrokToken:       "",
-		EnableCloudflare: false,
-		CloudflareToken:  "",
-		DebugMode:        false,
-		AnonMode:         false,
+		Port:         getEnv("PORT", "3000"),
+		AuthToken:    getEnv("AUTH_TOKEN", "moccha-secret-token"),
+		RateLimit:    100,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+		EnableNgrok:  true,
+		NgrokToken:   "3ApnBf8MFlCNR00uqBLaBETlmgL_5aPFjn2CuMEQWxF3UanFJ",
+		DebugMode:    false,
+		AnonMode:     false,
 	}
 
 	flag.StringVar(&cfg.Port, "port", cfg.Port, "Server port")
 	flag.StringVar(&cfg.AuthToken, "token", cfg.AuthToken, "Authentication token")
-	flag.BoolVar(&cfg.EnableNgrok, "ngrok", false, "Enable ngrok tunneling (deprecated, use -cloudflare)")
+	flag.BoolVar(&cfg.EnableNgrok, "ngrok", false, "Enable ngrok tunneling")
 	flag.StringVar(&cfg.NgrokToken, "ngrok-token", cfg.NgrokToken, "Ngrok auth token (optional)")
-	flag.BoolVar(&cfg.EnableCloudflare, "cloudflare", false, "Enable Cloudflare Tunnel")
-	flag.StringVar(&cfg.CloudflareToken, "cloudflare-token", cfg.CloudflareToken, "Cloudflare Tunnel token")
 	flag.BoolVar(&cfg.DebugMode, "debug", false, "Enable debug mode with verbose logging")
 	flag.BoolVar(&cfg.AnonMode, "anon", false, "Enable anonymous mode (no authentication required)")
 	flag.Parse()
@@ -132,6 +168,10 @@ func main() {
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
+		// Use background context to prevent cancellation
+		BaseContext: func(net.Listener) context.Context {
+			return context.Background()
+		},
 	}
 
 	// Find available port BEFORE starting server
@@ -171,12 +211,7 @@ func main() {
 	}
 
 	// Start tunnel AFTER server is ready
-	if cfg.EnableCloudflare {
-		if err := startCloudflare(cfg.Port, cfg.CloudflareToken, cfg.DebugMode); err != nil {
-			log.Printf("Warning: Failed to start Cloudflare Tunnel: %v", err)
-			log.Println("Continuing without tunnel...")
-		}
-	} else if cfg.EnableNgrok {
+	if cfg.EnableNgrok {
 		if err := startNgrok(cfg.Port, cfg.NgrokToken, cfg.DebugMode); err != nil {
 			log.Printf("Warning: Failed to start ngrok: %v", err)
 			log.Println("Continuing without tunnel...")
@@ -189,16 +224,16 @@ func main() {
 
 	log.Println("Shutting down server...")
 
-	// First stop cloudflared/ngrok tunnel
-	if cloudflaredProcess != nil && cloudflaredProcess.Process != nil {
-		log.Println("Stopping Cloudflare Tunnel/ngrok...")
+	// First stop ngrok tunnel
+	if ngrokProcess != nil && ngrokProcess.Process != nil {
+		log.Println("Stopping ngrok tunnel...")
 		// Try graceful shutdown first
-		cloudflaredProcess.Process.Signal(syscall.SIGTERM)
+		ngrokProcess.Process.Signal(syscall.SIGTERM)
 
 		// Wait for process to exit with timeout
 		done := make(chan struct{})
 		go func() {
-			cloudflaredProcess.Wait()
+			ngrokProcess.Wait()
 			close(done)
 		}()
 
@@ -208,8 +243,8 @@ func main() {
 		case <-time.After(5 * time.Second):
 			// Force kill if still running - kill entire process group
 			log.Println("Forcing tunnel process to stop...")
-			syscall.Kill(-cloudflaredProcess.Process.Pid, syscall.SIGKILL)
-			cloudflaredProcess.Wait()
+			syscall.Kill(-ngrokProcess.Process.Pid, syscall.SIGKILL)
+			ngrokProcess.Wait()
 		}
 	}
 
@@ -230,14 +265,47 @@ func main() {
 func startNgrok(port, token string, debug bool) error {
 	log.Println("Starting ngrok tunnel...")
 
-	ngrokPath := "./cmd/server/ngrok"
+	runtimeOS := runtime.GOOS
+	runtimeArch := runtime.GOARCH
 
-	// Check if ngrok exists
-	if _, err := os.Stat(ngrokPath); os.IsNotExist(err) {
-		return fmt.Errorf("ngrok binary not found at %s. Run 'make embed-ngrok' or download ngrok manually", ngrokPath)
+	var ngrokPath string
+	var data []byte
+
+	if runtimeOS == "darwin" && runtimeArch == "arm64" {
+		ngrokPath = "./cmd/server/ngrok/darwin-arm64/ngrok"
+		if _, statErr := os.Stat(ngrokPath); os.IsNotExist(statErr) {
+			var readErr error
+			data, readErr = ngrokDarwin.ReadFile("ngrok/darwin-arm64/ngrok")
+			if readErr != nil {
+				return fmt.Errorf("ngrok darwin-arm64 binary not found: %w", readErr)
+			}
+		}
+	} else if runtimeOS == "linux" && runtimeArch == "amd64" {
+		ngrokPath = "./cmd/server/ngrok/linux-amd64/ngrok"
+		if _, statErr := os.Stat(ngrokPath); os.IsNotExist(statErr) {
+			var readErr error
+			data, readErr = ngrokLinux.ReadFile("ngrok/linux-amd64/ngrok")
+			if readErr != nil {
+				return fmt.Errorf("ngrok linux-amd64 binary not found: %w", readErr)
+			}
+		}
+	} else {
+		return fmt.Errorf("unsupported platform: %s/%s", runtimeOS, runtimeArch)
 	}
 
-	args := []string{"http", port, "--log=stdout"}
+	if data != nil {
+		ngrokPath = "/tmp/moccha-ngrok"
+		if debug {
+			log.Printf("[DEBUG] Writing ngrok binary to %s (size: %d bytes)", ngrokPath, len(data))
+		}
+		if err := os.WriteFile(ngrokPath, data, 0755); err != nil {
+			return fmt.Errorf("failed to write ngrok binary: %w", err)
+		}
+	} else if debug {
+		log.Printf("[DEBUG] Using existing ngrok binary at %s", ngrokPath)
+	}
+
+	args := []string{"http", port, "--log=stdout", "--domain=sombrous-villose-nidia.ngrok-free.dev"}
 	if token != "" {
 		args = append(args, "--authtoken", token)
 	}
@@ -247,9 +315,9 @@ func startNgrok(port, token string, debug bool) error {
 	}
 
 	cmd := exec.Command(ngrokPath, args...)
-	// Run ngrok in background - hide all output, use API to get URL
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	// Run ngrok in background - show output for debugging
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
@@ -258,7 +326,7 @@ func startNgrok(port, token string, debug bool) error {
 		return fmt.Errorf("failed to start ngrok: %w", err)
 	}
 
-	cloudflaredProcess = cmd
+	ngrokProcess = cmd
 
 	if debug {
 		log.Printf("[DEBUG] Ngrok process started with PID: %d", cmd.Process.Pid)
@@ -307,82 +375,6 @@ func getNgrokUrl() (string, error) {
 	}
 
 	return "", fmt.Errorf("ngrok URL not available")
-}
-
-func startCloudflare(port, token string, debug bool) error {
-	log.Println("Starting Cloudflare Tunnel...")
-
-	// Check if cloudflared binary exists in the expected location
-	cloudflaredPath := "./cmd/server/cloudflared/cloudflared"
-	if _, err := os.Stat(cloudflaredPath); os.IsNotExist(err) {
-		// Fallback to embedded binary approach
-		cloudflaredPath = "/tmp/moccha-cloudflared"
-		data, err := cloudflaredBinary.ReadFile("cloudflared/cloudflared")
-		if err != nil {
-			return fmt.Errorf("cloudflared binary not found. Run 'make embed-cloudflare' first: %w", err)
-		}
-
-		if debug {
-			log.Printf("[DEBUG] Writing cloudflared binary to %s (size: %d bytes)", cloudflaredPath, len(data))
-		}
-
-		if err := os.WriteFile(cloudflaredPath, data, 0755); err != nil {
-			return fmt.Errorf("failed to write cloudflared binary: %w", err)
-		}
-	} else if debug {
-		log.Printf("[DEBUG] Using existing cloudflared binary at %s", cloudflaredPath)
-	}
-
-	// Cloudflare Tunnel requires a token for authenticated tunnels
-	// If no token provided, use quick tunnel mode
-	var args []string
-	if token != "" {
-		// Use token-based tunnel (requires cloudflared tunnel create/run first)
-		args = []string{"tunnel", "--url", "http://127.0.0.1:" + port}
-		log.Println("Note: For persistent tunnels, configure a Cloudflare Tunnel manually")
-	} else {
-		// Use quick tunnel mode (no authentication needed, temporary URL)
-		args = []string{"tunnel", "--url", "http://127.0.0.1:" + port}
-	}
-
-	if debug {
-		log.Printf("[DEBUG] Cloudflare command: %s %v", cloudflaredPath, args)
-	}
-
-	cmd := exec.Command(cloudflaredPath, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start cloudflared: %w", err)
-	}
-
-	cloudflaredProcess = cmd
-
-	if debug {
-		log.Printf("[DEBUG] Cloudflare process started with PID: %d", cmd.Process.Pid)
-	}
-
-	// Monitor tunnel startup and look for successful connection
-	go func() {
-		time.Sleep(3 * time.Second)
-		log.Println("Cloudflare Tunnel started, waiting for connection...")
-
-		// Check if the process is still running after a short delay
-		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
-			log.Printf("Warning: Cloudflare tunnel process may have failed to start properly: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			log.Printf("Cloudflare process exited with error: %v", err)
-		} else {
-			log.Println("Cloudflare process exited normally")
-		}
-	}()
-
-	return nil
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

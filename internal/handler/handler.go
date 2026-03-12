@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -239,12 +240,20 @@ var upgrader = websocket.Upgrader{
 }
 
 func (h *Handler) TerminalWS(w http.ResponseWriter, r *http.Request) {
+	// ✅ Log semua environment details
+	log.Printf("=== Terminal WS Connection ===")
+	log.Printf("Remote: %s", r.RemoteAddr)
+	log.Printf("User: %s (UID: %d)", os.Getenv("USER"), os.Getuid())
+	log.Printf("Home: %s", os.Getenv("HOME"))
+	log.Printf("EUID: %d, EGID: %d", os.Geteuid(), os.Getegid())
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade error: %v", err)
 		return
 	}
-	defer conn.Close()
+
+	// Note: Don't defer close here - session will handle cleanup
 
 	sessionID := uuid.New().String()
 	cols := 80
@@ -257,10 +266,13 @@ func (h *Handler) TerminalWS(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(rowsStr, "%d", &rows)
 	}
 
+	log.Printf("Creating session with cols=%d rows=%d", cols, rows)
+
 	_, err = h.termMgr.CreateSession(sessionID, conn, cols, rows)
 	if err != nil {
 		log.Printf("Session creation error: %v", err)
 		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"error":"%s"}`, err)))
+		conn.Close()
 		return
 	}
 
