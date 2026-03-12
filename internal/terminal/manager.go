@@ -221,6 +221,7 @@ func (m *Manager) handleWsToPty(s *Session) {
 		switch msgType {
 		case websocket.BinaryMessage:
 			// Write dengan timeout
+			log.Printf("[Terminal] Received binary message, length: %d", len(msg))
 			s.PTY.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if _, err := s.PTY.Write(msg); err != nil {
 				log.Printf("[Terminal] PTY write error: %v", err)
@@ -228,29 +229,41 @@ func (m *Manager) handleWsToPty(s *Session) {
 			}
 
 		case websocket.TextMessage:
-			// Proper JSON parsing
-			var m Message
-			if err := json.Unmarshal(msg, &m); err != nil {
-				log.Printf("[Terminal] JSON parse error: %v", err)
-				continue
-			}
-
-			switch m.Type {
-			case "resize":
-				if m.Cols > 0 && m.Rows > 0 && m.Cols < 1000 && m.Rows < 1000 {
-					if err := pty.Setsize(s.PTY, &pty.Winsize{
-						Cols: uint16(m.Cols),
-						Rows: uint16(m.Rows),
-					}); err != nil {
-						log.Printf("[Terminal] Resize error: %v", err)
-					}
+			log.Printf("[Terminal] Received text message: %s", string(msg))
+			// Check if it's JSON or plain text
+			if len(msg) > 0 && msg[0] == '{' {
+				// Proper JSON parsing
+				var m Message
+				if err := json.Unmarshal(msg, &m); err != nil {
+					log.Printf("[Terminal] JSON parse error: %v", err)
+					continue
 				}
 
-			case "ping":
-				s.mu.Lock()
-				s.WS.SetWriteDeadline(time.Now().Add(writeTimeout))
-				s.WS.WriteMessage(websocket.TextMessage, []byte(`{"type":"pong"}`))
-				s.mu.Unlock()
+				switch m.Type {
+				case "resize":
+					if m.Cols > 0 && m.Rows > 0 && m.Cols < 1000 && m.Rows < 1000 {
+						if err := pty.Setsize(s.PTY, &pty.Winsize{
+							Cols: uint16(m.Cols),
+							Rows: uint16(m.Rows),
+						}); err != nil {
+							log.Printf("[Terminal] Resize error: %v", err)
+						}
+					}
+
+				case "ping":
+					s.mu.Lock()
+					s.WS.SetWriteDeadline(time.Now().Add(writeTimeout))
+					s.WS.WriteMessage(websocket.TextMessage, []byte(`{"type":"pong"}`))
+					s.mu.Unlock()
+				}
+			} else {
+				// Plain text (keystrokes) - write directly to PTY
+				log.Printf("[Terminal] Plain text (keystrokes): %s", string(msg))
+				s.PTY.SetWriteDeadline(time.Now().Add(writeTimeout))
+				if _, err := s.PTY.Write(msg); err != nil {
+					log.Printf("[Terminal] PTY write error: %v", err)
+					return
+				}
 			}
 		}
 	}
