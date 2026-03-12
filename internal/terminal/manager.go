@@ -51,8 +51,13 @@ func New() *Manager {
 
 func (m *Manager) CreateSession(id string, ws *websocket.Conn, cols, rows int) (*Session, error) {
 	shell := "/bin/bash"
+	// Try zsh first, fall back to bash
 	if _, err := os.Stat("/bin/zsh"); err == nil {
 		shell = "/bin/zsh"
+	}
+	// If that fails, try bash
+	if _, err := os.Stat(shell); err != nil {
+		shell = "/bin/bash"
 	}
 
 	cmd := exec.Command(shell, []string{"--login"}...)

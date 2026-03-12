@@ -44,6 +44,7 @@ type Config struct {
 	EnableCloudflare bool
 	CloudflareToken  string
 	DebugMode        bool
+	AnonMode         bool
 }
 
 var cloudflaredProcess *exec.Cmd
@@ -61,6 +62,7 @@ func main() {
 		EnableCloudflare: false,
 		CloudflareToken:  "",
 		DebugMode:        false,
+		AnonMode:         false,
 	}
 
 	flag.StringVar(&cfg.Port, "port", cfg.Port, "Server port")
@@ -70,6 +72,7 @@ func main() {
 	flag.BoolVar(&cfg.EnableCloudflare, "cloudflare", false, "Enable Cloudflare Tunnel")
 	flag.StringVar(&cfg.CloudflareToken, "cloudflare-token", cfg.CloudflareToken, "Cloudflare Tunnel token")
 	flag.BoolVar(&cfg.DebugMode, "debug", false, "Enable debug mode with verbose logging")
+	flag.BoolVar(&cfg.AnonMode, "anon", false, "Enable anonymous mode (no authentication required)")
 	flag.Parse()
 
 	if cfg.DebugMode {
@@ -101,7 +104,10 @@ func main() {
 	r.Handle("/web/*", http.StripPrefix("/web", http.FileServer(http.FS(webFiles))))
 
 	r.Group(func(r chi.Router) {
-		r.Use(authMdw.Authenticate)
+		// Only use auth if not in anon mode
+		if !cfg.AnonMode {
+			r.Use(authMdw.Authenticate)
+		}
 		r.Use(rateMdw.Limit)
 
 		r.Get("/api/health", h.Health)
