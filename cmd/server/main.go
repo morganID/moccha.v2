@@ -157,23 +157,21 @@ func main() {
 		log.Printf("Auth token: %s", cfg.AuthToken)
 		log.Printf("Web UI: http://localhost:%s/", cfg.Port)
 
-		// Wait for server to start before connecting tunnel
-		time.Sleep(2 * time.Second)
-
-		// Start tunnel after port is determined
+		// Start tunnel first, before the server
 		if cfg.EnableCloudflare {
 			if err := startCloudflare(cfg.Port, cfg.CloudflareToken, cfg.DebugMode); err != nil {
-				log.Printf("Error: Failed to start Cloudflare Tunnel: %v", err)
-				log.Println("Server will not start without tunnel. Exiting...")
-				return
+				log.Printf("Warning: Failed to start Cloudflare Tunnel: %v", err)
+				log.Println("Continuing without tunnel...")
 			}
 		} else if cfg.EnableNgrok {
 			if err := startNgrok(cfg.Port, cfg.NgrokToken, cfg.DebugMode); err != nil {
-				log.Printf("Error: Failed to start ngrok: %v", err)
-				log.Println("Server will not start without tunnel. Exiting...")
-				return
+				log.Printf("Warning: Failed to start ngrok: %v", err)
+				log.Println("Continuing without tunnel...")
 			}
 		}
+
+		// Wait a bit for tunnel to establish before starting server
+		time.Sleep(1 * time.Second)
 
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
@@ -309,19 +307,25 @@ func getNgrokUrl() (string, error) {
 func startCloudflare(port, token string, debug bool) error {
 	log.Println("Starting Cloudflare Tunnel...")
 
-	cloudflaredPath := "/tmp/moccha-cloudflared"
+	// Check if cloudflared binary exists in the expected location
+	cloudflaredPath := "./cmd/server/cloudflared/cloudflared"
+	if _, err := os.Stat(cloudflaredPath); os.IsNotExist(err) {
+		// Fallback to embedded binary approach
+		cloudflaredPath = "/tmp/moccha-cloudflared"
+		data, err := cloudflaredBinary.ReadFile("cloudflared/cloudflared")
+		if err != nil {
+			return fmt.Errorf("cloudflared binary not found. Run 'make embed-cloudflare' first: %w", err)
+		}
 
-	data, err := cloudflaredBinary.ReadFile("cloudflared/cloudflared")
-	if err != nil {
-		return fmt.Errorf("cloudflared binary not embedded. Run 'make embed-cloudflare' first, or download cloudflared manually: %w", err)
-	}
+		if debug {
+			log.Printf("[DEBUG] Writing cloudflared binary to %s (size: %d bytes)", cloudflaredPath, len(data))
+		}
 
-	if debug {
-		log.Printf("[DEBUG] Writing cloudflared binary to %s (size: %d bytes)", cloudflaredPath, len(data))
-	}
-
-	if err := os.WriteFile(cloudflaredPath, data, 0755); err != nil {
-		return fmt.Errorf("failed to write cloudflared binary: %w", err)
+		if err := os.WriteFile(cloudflaredPath, data, 0755); err != nil {
+			return fmt.Errorf("failed to write cloudflared binary: %w", err)
+		}
+	} else if debug {
+		log.Printf("[DEBUG] Using existing cloudflared binary at %s", cloudflaredPath)
 	}
 
 	// Cloudflare Tunnel requires a token for authenticated tunnels
@@ -356,14 +360,22 @@ func startCloudflare(port, token string, debug bool) error {
 		log.Printf("[DEBUG] Cloudflare process started with PID: %d", cmd.Process.Pid)
 	}
 
+	// Monitor tunnel startup and look for successful connection
 	go func() {
 		time.Sleep(3 * time.Second)
-		log.Println("Waiting for Cloudflare Tunnel...")
+		log.Println("Cloudflare Tunnel started, waiting for connection...")
+
+		// Check if the process is still running after a short delay
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			log.Printf("Warning: Cloudflare tunnel process may have failed to start properly: %v", err)
+		}
 	}()
 
 	go func() {
 		if err := cmd.Wait(); err != nil {
-			log.Printf("Cloudflare process exited: %v", err)
+			log.Printf("Cloudflare process exited with error: %v", err)
+		} else {
+			log.Println("Cloudflare process exited normally")
 		}
 	}()
 
