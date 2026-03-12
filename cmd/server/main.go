@@ -18,7 +18,6 @@ import (
 
 	"moccha/internal/filemanager"
 	"moccha/internal/handler"
-	appMiddleware "moccha/internal/mw"
 	"moccha/internal/system"
 	"moccha/internal/terminal"
 
@@ -57,7 +56,7 @@ func main() {
 		ReadTimeout:      30 * time.Second,
 		WriteTimeout:     30 * time.Second,
 		IdleTimeout:      120 * time.Second,
-		EnableNgrok:      false,
+		EnableNgrok:      true, // Default to using ngrok
 		NgrokToken:       "",
 		EnableCloudflare: false,
 		CloudflareToken:  "",
@@ -84,10 +83,7 @@ func main() {
 	sysInfo := system.New()
 	fileMgr := filemanager.New()
 
-	authMdw := appMiddleware.NewAuth(cfg.AuthToken)
-	rateMdw := appMiddleware.NewRateLimiter(cfg.RateLimit)
-
-	h := handler.New(termManager, sysInfo, fileMgr)
+	h := handler.New(termManager, sysInfo, fileMgr, cfg.AuthToken)
 
 	r := chi.NewRouter()
 	r.Use(chiMiddleware.RequestID)
@@ -100,83 +96,92 @@ func main() {
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(corsMiddleware)
 
-	r.Get("/", h.Index)
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		index, err := webFiles.ReadFile("web/dist/index.html")
+		if err != nil {
+			http.Error(w, "Web UI not found", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		w.Write(index)
+	})
 	r.Handle("/web/*", http.StripPrefix("/web", http.FileServer(http.FS(webFiles))))
 
-	r.Group(func(r chi.Router) {
-		// Only use auth if not in anon mode
-		if !cfg.AnonMode {
-			r.Use(authMdw.Authenticate)
-		}
-		r.Use(rateMdw.Limit)
+	// Login endpoint - no auth required
+	r.Post("/api/login", h.Login)
 
-		r.Get("/api/health", h.Health)
+	r.Get("/api/health", h.Health)
 
-		r.Get("/api/system/info", h.SystemInfo)
-		r.Get("/api/system/processes", h.Processes)
-		r.Get("/api/system/network", h.NetworkInfo)
-		r.Get("/api/system/disk", h.DiskInfo)
+	r.Get("/api/system/info", h.SystemInfo)
+	r.Get("/api/system/processes", h.Processes)
+	r.Get("/api/system/network", h.NetworkInfo)
+	r.Get("/api/system/disk", h.DiskInfo)
 
-		r.Get("/api/files/*", h.ListFiles)
-		r.Post("/api/files/*", h.CreateFile)
-		r.Put("/api/files/*", h.RenameFile)
-		r.Delete("/api/files/*", h.DeleteFile)
-		r.Post("/api/files/upload/*", h.UploadFile)
-		r.Get("/api/files/download/*", h.DownloadFile)
+	r.Get("/api/files/*", h.ListFiles)
+	r.Post("/api/files/*", h.CreateFile)
+	r.Put("/api/files/*", h.RenameFile)
+	r.Delete("/api/files/*", h.DeleteFile)
+	r.Post("/api/files/upload/*", h.UploadFile)
+	r.Get("/api/files/download/*", h.DownloadFile)
 
-		r.Get("/api/terminal/ws", h.TerminalWS)
-	})
+	r.Get("/api/terminal/ws", h.TerminalWS)
 
 	srv := &http.Server{
-		Addr:         "127.0.0.1:" + cfg.Port,
+		Addr:         "0.0.0.0:" + cfg.Port,
 		Handler:      r,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
 	}
 
+	// Find available port BEFORE starting server
+	ln, err := net.Listen("tcp", "0.0.0.0:"+cfg.Port)
+	if err != nil {
+		// Port is in use, find available port
+		newPort, findErr := findAvailablePort(cfg.Port)
+		if findErr != nil {
+			log.Fatalf("Failed to find available port: %v", findErr)
+		}
+		cfg.Port = newPort
+		srv.Addr = "0.0.0.0:" + newPort
+		if cfg.DebugMode {
+			log.Printf("[DEBUG] Port was in use, using port %s instead", newPort)
+		}
+	} else {
+		ln.Close()
+	}
+
+	log.Printf("Moccha server starting on port %s", cfg.Port)
+	log.Printf("Auth token: %s", cfg.AuthToken)
+	log.Printf("Web UI: http://localhost:%s/", cfg.Port)
+
+	// Start HTTP server
 	go func() {
-		// Try to find available port if the requested port is in use
-		originalPort := cfg.Port
-		if ln, err := net.Listen("tcp", "0.0.0.0:"+cfg.Port); err != nil {
-			// Port is in use, find available port
-			newPort, findErr := findAvailablePort(cfg.Port)
-			if findErr != nil {
-				log.Fatalf("Failed to find available port: %v", findErr)
-			}
-			cfg.Port = newPort
-			srv.Addr = "0.0.0.0:" + newPort
-			if cfg.DebugMode {
-				log.Printf("[DEBUG] Port %s is in use, using port %s instead", originalPort, newPort)
-			}
-		} else {
-			ln.Close()
-		}
-
-		log.Printf("Moccha server starting on port %s", cfg.Port)
-		log.Printf("Auth token: %s", cfg.AuthToken)
-		log.Printf("Web UI: http://localhost:%s/", cfg.Port)
-
-		// Start tunnel first, before the server
-		if cfg.EnableCloudflare {
-			if err := startCloudflare(cfg.Port, cfg.CloudflareToken, cfg.DebugMode); err != nil {
-				log.Printf("Warning: Failed to start Cloudflare Tunnel: %v", err)
-				log.Println("Continuing without tunnel...")
-			}
-		} else if cfg.EnableNgrok {
-			if err := startNgrok(cfg.Port, cfg.NgrokToken, cfg.DebugMode); err != nil {
-				log.Printf("Warning: Failed to start ngrok: %v", err)
-				log.Println("Continuing without tunnel...")
-			}
-		}
-
-		// Wait a bit for tunnel to establish before starting server
-		time.Sleep(1 * time.Second)
-
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()
+
+	// Wait for server to be ready before starting tunnel
+	log.Println("Waiting for server to be ready...")
+	if err := waitForServerReady(cfg.Port, 15, 500*time.Millisecond); err != nil {
+		log.Printf("Warning: Server may not be ready: %v", err)
+	} else {
+		log.Println("Server is ready")
+	}
+
+	// Start tunnel AFTER server is ready
+	if cfg.EnableCloudflare {
+		if err := startCloudflare(cfg.Port, cfg.CloudflareToken, cfg.DebugMode); err != nil {
+			log.Printf("Warning: Failed to start Cloudflare Tunnel: %v", err)
+			log.Println("Continuing without tunnel...")
+		}
+	} else if cfg.EnableNgrok {
+		if err := startNgrok(cfg.Port, cfg.NgrokToken, cfg.DebugMode); err != nil {
+			log.Printf("Warning: Failed to start ngrok: %v", err)
+			log.Println("Continuing without tunnel...")
+		}
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -333,12 +338,10 @@ func startCloudflare(port, token string, debug bool) error {
 	var args []string
 	if token != "" {
 		// Use token-based tunnel (requires cloudflared tunnel create/run first)
-		// Bind to 127.0.0.1 for reliable Cloudflare tunnel connection
 		args = []string{"tunnel", "--url", "http://127.0.0.1:" + port}
 		log.Println("Note: For persistent tunnels, configure a Cloudflare Tunnel manually")
 	} else {
 		// Use quick tunnel mode (no authentication needed, temporary URL)
-		// Bind to 127.0.0.1 for reliable Cloudflare tunnel connection
 		args = []string{"tunnel", "--url", "http://127.0.0.1:" + port}
 	}
 
@@ -423,6 +426,18 @@ func findAvailablePort(startPort string) (string, error) {
 		port = fmt.Sprintf("%d", portInt+1)
 	}
 	return "", fmt.Errorf("no available port found")
+}
+
+func waitForServerReady(port string, maxRetries int, delay time.Duration) error {
+	for i := 0; i < maxRetries; i++ {
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, 1*time.Second)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		time.Sleep(delay)
+	}
+	return fmt.Errorf("server not ready after %d retries", maxRetries)
 }
 
 func debugLogger(next http.Handler) http.Handler {

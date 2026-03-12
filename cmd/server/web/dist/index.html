@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Moccha - Remote System Management</title>
     <style>
@@ -31,83 +34,10 @@
             min-height: 100vh;
         }
 
-        .login-screen {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
-        }
-
-        .login-box {
-            background: var(--bg-secondary);
-            padding: 2rem;
-            border-radius: 12px;
-            border: 1px solid var(--border);
-            width: 100%;
-            max-width: 400px;
-        }
-
-        .login-box h1 {
-            margin-bottom: 1.5rem;
-            text-align: center;
-            color: var(--accent);
-        }
-
-        .form-group {
-            margin-bottom: 1rem;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 0.5rem;
-            color: var(--text-secondary);
-        }
-
-        .form-group input {
-            width: 100%;
-            padding: 0.75rem;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            color: var(--text-primary);
-            font-size: 1rem;
-        }
-
-        .form-group input:focus {
-            outline: none;
-            border-color: var(--accent);
-        }
-
-        .btn {
-            width: 100%;
-            padding: 0.75rem;
-            background: var(--accent);
-            border: none;
-            border-radius: 6px;
-            color: #fff;
-            font-size: 1rem;
-            cursor: pointer;
-            transition: opacity 0.2s;
-        }
-
-        .btn:hover {
-            opacity: 0.9;
-        }
-
-        .error-msg {
-            color: var(--danger);
-            margin-top: 1rem;
-            text-align: center;
-        }
 
         .app {
-            display: none;
-            min-height: 100vh;
-        }
-
-        .app.active {
             display: block;
+            min-height: 100vh;
         }
 
         .sidebar {
@@ -437,19 +367,6 @@
     </style>
 </head>
 <body>
-    <div class="login-screen" id="loginScreen">
-        <div class="login-box">
-            <h1>Moccha</h1>
-            <form id="loginForm">
-                <div class="form-group">
-                    <label>Token</label>
-                    <input type="password" id="tokenInput" placeholder="Enter your auth token">
-                </div>
-                <button type="submit" class="btn">Connect</button>
-                <div class="error-msg" id="loginError"></div>
-            </form>
-        </div>
-    </div>
 
     <div class="app" id="app">
         <nav class="sidebar">
@@ -558,6 +475,7 @@
     <input type="file" id="fileInput" style="display: none;">
 
     <script>
+        alert('JavaScript loaded!');
         let token = '';
         let ws = null;
         let currentPath = '/';
@@ -567,35 +485,14 @@
 
         const API_BASE = window.location.origin;
 
-        document.getElementById('loginForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            token = document.getElementById('tokenInput').value;
-            
-            try {
-                const res = await fetch(`${API_BASE}/api/health`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (res.ok) {
-                    localStorage.setItem('moccha_token', token);
-                    showApp();
-                } else {
-                    document.getElementById('loginError').textContent = 'Invalid token';
-                }
-            } catch (err) {
-                document.getElementById('loginError').textContent = 'Connection failed';
-            }
-        });
 
         function showApp() {
-            document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('app').classList.add('active');
             initTerminal();
             loadSystemInfo();
             loadFiles();
         }
 
         function logout() {
-            localStorage.removeItem('moccha_token');
             if (ws) ws.close();
             window.location.reload();
         }
@@ -604,8 +501,7 @@
             const res = await fetch(url, {
                 ...options,
                 headers: {
-                    ...options.headers,
-                    'Authorization': `Bearer ${token}`
+                    ...options.headers
                 }
             });
             if (!res.ok) throw new Error(await res.text());
@@ -619,8 +515,8 @@
                 document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
                 document.getElementById(`${btn.dataset.panel}-panel`).classList.add('active');
                 
-                if (btn.dataset.panel === 'system') loadSystem (btn.dataset.panelInfo();
-                if === 'files') loadFiles();
+                if (btn.dataset.panel === 'system') loadSystemInfo();
+                if (btn.dataset.panel === 'files') loadFiles();
             });
         });
 
@@ -732,17 +628,22 @@
                 const data = await apiCall(`${API_BASE}/api/files${currentPath}`);
                 const list = document.getElementById('fileList');
                 
-                list.innerHTML = data.files.map(f => `
-                    <div class="file-item ${f.isDir ? 'dir' : ''}" onclick="${f.isDir ? `cd('${f.name}')` : ''}" ondblclick="${f.isDir ? `cd('${f.name}')` : `viewFile('${f.path}')`}">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            ${f.isDir 
-                                ? '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>'
-                                : '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14,2 14,8 20,8"></polyline>'}
-                        </svg>
-                        <span>${f.name}</span>
-                        <span style="margin-left:auto;color:var(--text-secondary)">${f.isDir ? '' : formatBytes(f.size)}</span>
-                    </div>
-                `).join('');
+                function makeFileItem(f) {
+                    var isDir = f.isDir;
+                    var onclick = isDir ? "cd('" + f.name + "')" : "";
+                    var ondblclick = isDir ? "cd('" + f.name + "')" : "viewFile('" + f.path + "')";
+                    var svg = isDir 
+                        ? '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>'
+                        : '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14,2 14,8 20,8"></polyline>';
+                    var size = isDir ? '' : formatBytes(f.size);
+                    return '<div class="file-item ' + (isDir ? 'dir' : '') + '" onclick="' + onclick + '" ondblclick="' + ondblclick + '">' +
+                        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' + svg + '</svg>' +
+                        '<span>' + f.name + '</span>' +
+                        '<span style="margin-left:auto;color:var(--text-secondary)">' + size + '</span>' +
+                        '</div>';
+                }
+                
+                list.innerHTML = data.files.map(makeFileItem).join('');
 
                 document.getElementById('currentPath').querySelector('span').textContent = currentPath || '/';
             } catch (err) {
@@ -821,13 +722,8 @@
             return `${d}d ${h}h ${m}m`;
         }
 
-        const savedToken = localStorage.getItem('moccha_token');
-        if (savedToken) {
-            token = savedToken;
-            fetch(`${API_BASE}/api/health`, { headers: { 'Authorization': `Bearer ${token}` }})
-                .then(res => { if (res.ok) showApp(); })
-                .catch(() => {});
-        }
+        // Start the app immediately without authentication
+        showApp();
     </script>
 </body>
 </html>

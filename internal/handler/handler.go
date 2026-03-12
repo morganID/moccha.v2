@@ -20,41 +20,19 @@ import (
 )
 
 type Handler struct {
-	termMgr *terminal.Manager
-	sysInfo *system.System
-	fileMgr *filemanager.FileManager
+	termMgr   *terminal.Manager
+	sysInfo   *system.System
+	fileMgr   *filemanager.FileManager
+	authToken string
 }
 
-func New(termMgr *terminal.Manager, sysInfo *system.System, fileMgr *filemanager.FileManager) *Handler {
+func New(termMgr *terminal.Manager, sysInfo *system.System, fileMgr *filemanager.FileManager, authToken string) *Handler {
 	return &Handler{
-		termMgr: termMgr,
-		sysInfo: sysInfo,
-		fileMgr: fileMgr,
+		termMgr:   termMgr,
+		sysInfo:   sysInfo,
+		fileMgr:   fileMgr,
+		authToken: authToken,
 	}
-}
-
-func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
-	// Try to serve web UI, fallback to API info if not available
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!DOCTYPE html>
-<html>
-<head><title>Moccha Server</title></head>
-<body>
-<h1>Moccha Server Running</h1>
-<p>Cloudflare Tunnel: Connected</p>
-<pre>
-API Endpoints:
-- GET /api/health
-- GET /api/system/info
-- GET /api/system/processes
-- GET /api/system/network
-- GET /api/system/disk
-- GET /api/files/*
-- WebSocket: /api/terminal/ws
-</pre>
-<p><em>Note: Web UI not built. Run 'npm run build' in web folder.</em></p>
-</body>
-</html>`)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +41,15 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		"status":    "ok",
 		"timestamp": time.Now().Unix(),
 		"uptime":    time.Now().Unix(),
+	})
+}
+
+// Login endpoint - no authentication required
+func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "ok",
+		"message": "Authentication successful",
 	})
 }
 

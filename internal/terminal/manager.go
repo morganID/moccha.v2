@@ -60,22 +60,22 @@ func (m *Manager) CreateSession(id string, ws *websocket.Conn, cols, rows int) (
 		shell = "/bin/bash"
 	}
 
+	log.Printf("[Terminal] Starting shell: %s", shell)
+
 	cmd := exec.Command(shell, []string{"--login"}...)
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
 		"LANG=en_US.UTF-8",
 	)
-	// Set up process group for proper cleanup
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-		Pgid:    0,
-	}
 
 	pt, err := pty.Start(cmd)
 	if err != nil {
+		log.Printf("[Terminal] PTY Start error: %v", err)
 		return nil, fmt.Errorf("failed to start PTY: %w", err)
 	}
+
+	log.Printf("[Terminal] PTY started successfully, cols=%d rows=%d", cols, rows)
 
 	if err := pty.Setsize(pt, &pty.Winsize{
 		Cols: uint16(cols),
