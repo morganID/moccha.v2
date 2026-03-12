@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -226,7 +228,7 @@ func startNgrok(port, token string, debug bool) error {
 		return fmt.Errorf("ngrok binary not found at %s. Run 'make embed-ngrok' or download ngrok manually", ngrokPath)
 	}
 
-	args := []string{"http", port}
+	args := []string{"http", port, "--log=stdout"}
 	if token != "" {
 		args = append(args, "--authtoken", token)
 	}
@@ -236,8 +238,12 @@ func startNgrok(port, token string, debug bool) error {
 	}
 
 	cmd := exec.Command(ngrokPath, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Run ngrok in background - hide all output, use API to get URL
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start ngrok: %w", err)
@@ -249,8 +255,28 @@ func startNgrok(port, token string, debug bool) error {
 		log.Printf("[DEBUG] Ngrok process started with PID: %d", cmd.Process.Pid)
 	}
 
+	// Try to get the URL from ngrok API
 	go func() {
-		time.Sleep(3 * time.Second)
+		for i := 0; i < 10; i++ {
+			time.Sleep(2 * time.Second)
+			// Try to get URL from ngrok API
+			if resp, err := http.Get("http://127.0.0.1:4040/api/tunnels"); err == nil {
+				var result map[string]interface{}
+				if body, err := io.ReadAll(resp.Body); err == nil {
+					if json.Unmarshal(body, &result); err == nil {
+						if tunnels, ok := result["tunnels"].([]interface{}); ok && len(tunnels) > 0 {
+							if tunnel, ok := tunnels[0].(map[string]interface{}); ok {
+								if url, ok := tunnel["public_url"].(string); ok {
+									log.Printf("🌐 Ngrok URL: %s", url)
+									return
+								}
+							}
+						}
+					}
+				}
+				resp.Body.Close()
+			}
+		}
 		log.Println("Waiting for ngrok tunnel...")
 	}()
 
