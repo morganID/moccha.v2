@@ -34,7 +34,27 @@ func New(termMgr *terminal.Manager, sysInfo *system.System, fileMgr *filemanager
 }
 
 func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/web/index.html", http.StatusFound)
+	// Try to serve web UI, fallback to API info if not available
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html>
+<head><title>Moccha Server</title></head>
+<body>
+<h1>Moccha Server Running</h1>
+<p>Cloudflare Tunnel: Connected</p>
+<pre>
+API Endpoints:
+- GET /api/health
+- GET /api/system/info
+- GET /api/system/processes
+- GET /api/system/network
+- GET /api/system/disk
+- GET /api/files/*
+- WebSocket: /api/terminal/ws
+</pre>
+<p><em>Note: Web UI not built. Run 'npm run build' in web folder.</em></p>
+</body>
+</html>`)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {

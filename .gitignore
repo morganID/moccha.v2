@@ -10,6 +10,10 @@ ngrok
 /bin/
 /dist/
 
+# Embedded binaries (generated during build)
+cmd/server/ngrok
+cmd/server/cloudflared/
+
 # Dependencies
 vendor/
 

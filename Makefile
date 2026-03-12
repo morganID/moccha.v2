@@ -1,4 +1,4 @@
-.PHONY: all build build-darwin-arm64 build-linux-amd64 clean run
+.PHONY: all build build-darwin-arm64 build-linux-amd64 clean run run-debug run-prod run-cloudflare run-cloudflare-debug embed-cloudflare
 
 all: build-darwin-arm64 build-linux-amd64
 
@@ -18,22 +18,56 @@ build-linux-amd64:
 	tar -czvf moccha-linux-amd64.tar.gz moccha-linux-amd64
 	rm moccha-linux-amd64
 
-embed-ngrok:
-	@echo "Downloading ngrok..."
-	@if [ -f "cmd/server/ngrok" ]; then \
-		echo "ngrok already exists, skipping download"; \
+# Detect OS and Architecture
+OS := $(shell uname -s)
+ARCH := $(shell uname -m)
+
+# Download URL for cloudflared (Cloudflare Tunnel)
+ifeq ($(OS),Darwin)
+	ifeq ($(ARCH),arm64)
+		CLOUDFLARED_URL = https://github.com/cloudflare/cloudflared/releases/download/2026.3.0/cloudflared-darwin-arm64.tgz
+	endif
+	ifeq ($(ARCH),x86_64)
+		CLOUDFLARED_URL = https://github.com/cloudflare/cloudflared/releases/download/2026.3.0/cloudflared-darwin-amd64.tgz
+	endif
+endif
+ifeq ($(OS),Linux)
+	ifeq ($(ARCH),x86_64)
+		CLOUDFLARED_URL = https://github.com/cloudflare/cloudflared/releases/download/2026.3.0/cloudflared-linux-amd64.tgz
+	endif
+	ifeq ($(ARCH),aarch64)
+		CLOUDFLARED_URL = https://github.com/cloudflare/cloudflared/releases/download/2026.3.0/cloudflared-linux-arm64.tgz
+	endif
+endif
+
+embed-cloudflare:
+	@echo "Downloading cloudflared for $(OS)/$(ARCH)..."
+	@mkdir -p cmd/server/cloudflared
+	@if [ -f "cmd/server/cloudflared/cloudflared" ]; then \
+		echo "cloudflared already exists, skipping download"; \
+	elif [ -z "$(CLOUDFLARED_URL)" ]; then \
+		echo "Unsupported OS/Architecture: $(OS)/$(ARCH)"; exit 1; \
 	else \
-		curl -fsSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar xz -C cmd/server; \
-		chmod +x cmd/server/ngrok; \
+		curl -fsSL $(CLOUDFLARED_URL) | tar xz -C cmd/server/cloudflared; \
+		chmod +x cmd/server/cloudflared/cloudflared; \
 	fi
 	go build -o moccha ./cmd/server
 
 clean:
 	rm -f moccha
-	rm -f cmd/server/ngrok
+	rm -f cmd/server/cloudflared/cloudflared
 
 run:
 	./moccha -port 8080 -token mysecret
 
-run-ngrok:
-	./moccha -ngrok -port 8080 -token mysecret
+run-debug:
+	./moccha -debug -port 8080 -token mysecret
+
+run-prod:
+	./moccha -port 8080 -token mysecret
+
+run-cloudflare:
+	./moccha -cloudflare -port 8080 -token mysecret
+
+run-cloudflare-debug:
+	./moccha -cloudflare -debug -port 8080 -token mysecret

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -60,6 +61,11 @@ func (m *Manager) CreateSession(id string, ws *websocket.Conn, cols, rows int) (
 		"COLORTERM=truecolor",
 		"LANG=en_US.UTF-8",
 	)
+	// Set up process group for proper cleanup
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+		Pgid:    0,
+	}
 
 	pt, err := pty.Start(cmd)
 	if err != nil {
@@ -181,8 +187,9 @@ func (m *Manager) RemoveSession(id string) {
 		if !session.Closed {
 			session.Closed = true
 			session.PTY.Close()
-			if session.Cmd != nil {
-				session.Cmd.Process.Kill()
+			if session.Cmd != nil && session.Cmd.Process != nil {
+				// Kill the entire process group to ensure child processes are also killed
+				syscall.Kill(-session.Cmd.Process.Pid, syscall.SIGKILL)
 				session.Cmd.Wait()
 			}
 		}
@@ -198,8 +205,9 @@ func (m *Manager) CloseAll() {
 		if !session.Closed {
 			session.Closed = true
 			session.PTY.Close()
-			if session.Cmd != nil {
-				session.Cmd.Process.Kill()
+			if session.Cmd != nil && session.Cmd.Process != nil {
+				// Kill the entire process group to ensure child processes are also killed
+				syscall.Kill(-session.Cmd.Process.Pid, syscall.SIGKILL)
 				session.Cmd.Wait()
 			}
 		}
